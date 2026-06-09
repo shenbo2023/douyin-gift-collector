@@ -1,0 +1,7 @@
+{
+  "_说明": "复制为 config.json 后填写 sid_guard；可从浏览器 live.douyin.com Cookie 复制",
+  "sign_api": "http://203.195.182.244/api/sign?roomid={room_id}",
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+  "extra_cookie": "",
+  "gift_log_dir": ""
+}
