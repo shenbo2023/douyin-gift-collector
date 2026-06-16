@@ -93,7 +93,7 @@ class BackendPusher:
                     self.http_url,
                     data=body.encode("utf-8"),
                     headers=self._headers(),
-                    timeout=10,
+                    timeout=3,
                 )
                 if resp.status_code >= 400:
                     _log(f"[推送] HTTP {resp.status_code}: {resp.text[:200]}")
@@ -116,12 +116,18 @@ class BackendPusher:
                     if self._ws_app is None:
                         self._ws_app = websocket.create_connection(
                             self.ws_url,
-                            timeout=8,
+                            timeout=5,
                             header=[f"{k}: {v}" for k, v in self._headers().items()],
                         )
                     self._ws_app.send(body)
-                    resp = self._ws_app.recv()
-                text = resp.decode("utf-8") if isinstance(resp, bytes) else str(resp)
+                    # 礼物事件 bridge 会立即回 accepted，短超时即可
+                    self._ws_app.settimeout(2)
+                    try:
+                        resp = self._ws_app.recv()
+                        text = resp.decode("utf-8") if isinstance(resp, bytes) else str(resp)
+                    except Exception:
+                        # 已发出即视为成功，避免阻塞采集线程
+                        return True, "sent"
                 try:
                     result = json.loads(text)
                     if isinstance(result, dict) and result.get("code") == 0:
@@ -138,7 +144,7 @@ class BackendPusher:
                             pass
                         self._ws_app = None
                 if attempt == 0:
-                    time.sleep(0.3)
+                    time.sleep(0.1)
                     continue
                 return False, str(e)
         return False, "unknown"
