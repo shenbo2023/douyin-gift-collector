@@ -8,7 +8,7 @@
     "_说明": "exe 同目录 config.json 中配置；WebSocket 需服务器运行 douyin-gift-bridge",
     "enabled": false,
     "ws_url": "ws://你的服务器IP:8290",
-    "http_url": "https://你的域名/index.php/mqtt/douyinGift/ingest",
+    "http_url": "https://你的域名/index.php/mqtt/douyin_gift/ingest",
     "secret": "与 minibackground MQTT_BRIDGE_SECRET 一致",
     "anchor_id": 0
   }

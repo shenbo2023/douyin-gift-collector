@@ -83,8 +83,10 @@ class BackendPusher:
     def _send(self, data: Dict[str, Any]) -> None:
         body = json.dumps(data, ensure_ascii=False)
         if self.ws_url:
-            if self._send_ws(body):
+            ok, detail = self._send_ws(body)
+            if ok:
                 return
+            _log(f"[推送] WebSocket 未成功: {detail}")
         if self.http_url:
             try:
                 resp = requests.post(
@@ -95,12 +97,19 @@ class BackendPusher:
                 )
                 if resp.status_code >= 400:
                     _log(f"[推送] HTTP {resp.status_code}: {resp.text[:200]}")
+                else:
+                    try:
+                        result = resp.json()
+                        if isinstance(result, dict) and result.get("code") not in (0, None):
+                            _log(f"[推送] HTTP 业务失败: {result}")
+                    except ValueError:
+                        pass
             except requests.RequestException as e:
                 _log(f"[推送] HTTP 失败: {e}")
 
-    def _send_ws(self, body: str) -> bool:
+    def _send_ws(self, body: str) -> tuple[bool, str]:
         if websocket is None:
-            return False
+            return False, "未安装 websocket-client"
         for attempt in range(2):
             try:
                 with self._ws_lock:
@@ -111,7 +120,15 @@ class BackendPusher:
                             header=[f"{k}: {v}" for k, v in self._headers().items()],
                         )
                     self._ws_app.send(body)
-                return True
+                    resp = self._ws_app.recv()
+                text = resp.decode("utf-8") if isinstance(resp, bytes) else str(resp)
+                try:
+                    result = json.loads(text)
+                    if isinstance(result, dict) and result.get("code") == 0:
+                        return True, text
+                    return False, text
+                except ValueError:
+                    return True, text
             except Exception as e:
                 with self._ws_lock:
                     if self._ws_app is not None:
@@ -123,5 +140,5 @@ class BackendPusher:
                 if attempt == 0:
                     time.sleep(0.3)
                     continue
-                _log(f"[推送] WebSocket 失败: {e}")
-        return False
+                return False, str(e)
+        return False, "unknown"
