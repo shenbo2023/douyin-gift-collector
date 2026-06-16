@@ -3,5 +3,13 @@
   "sign_api": "http://203.195.182.244/api/sign?roomid={room_id}",
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
   "extra_cookie": "",
-  "gift_log_dir": ""
+  "gift_log_dir": "",
+  "backend_push": {
+    "_说明": "exe 同目录 config.json 中配置；WebSocket 需服务器运行 douyin-gift-bridge",
+    "enabled": false,
+    "ws_url": "ws://你的服务器IP:8290",
+    "http_url": "https://你的域名/index.php/mqtt/douyinGift/ingest",
+    "secret": "与 minibackground MQTT_BRIDGE_SECRET 一致",
+    "anchor_id": 0
+  }
 }

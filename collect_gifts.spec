@@ -6,14 +6,23 @@ from pathlib import Path
 
 root = Path(SPECPATH)
 
+# HTTPS 推送（backend_push.http_url）在 exe 内需要证书
+try:
+    import certifi
+
+    certifi_data = [(certifi.where(), "certifi")]
+except ImportError:
+    certifi_data = []
+
 a = Analysis(
     [str(root / "app_gui.py")],
     pathex=[str(root)],
     binaries=[],
     datas=[
-        (str(root / "config.json"), "."),
+        (str(root / "config.example.json"), "."),
         (str(root / "proto" / "douyin_live_pb2.py"), "proto"),
         (str(root / "sign.js"), "."),
+        *certifi_data,
     ],
     hiddenimports=[
         "google.protobuf",
@@ -26,6 +35,24 @@ a = Analysis(
         "douyin_live_pb2",
         "certifi",
         "collect_gifts",
+        "backend_push",
+        "requests",
+        "urllib3",
+        "idna",
+        "charset_normalizer",
+        "websocket",
+        "websocket._abnf",
+        "websocket._app",
+        "websocket._cookiejar",
+        "websocket._core",
+        "websocket._exceptions",
+        "websocket._handshake",
+        "websocket._http",
+        "websocket._logging",
+        "websocket._socket",
+        "websocket._ssl_compat",
+        "websocket._url",
+        "websocket._utils",
     ],
     hookspath=[],
     hooksconfig={},

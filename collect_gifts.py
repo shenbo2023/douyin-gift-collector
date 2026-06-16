@@ -50,8 +50,17 @@ _ROOT = _APP
 sys.path.insert(0, os.path.join(_BUNDLE, "vendor"))
 sys.path.insert(0, os.path.join(_BUNDLE, "proto"))
 
+if getattr(sys, "frozen", False):
+    try:
+        import certifi
+
+        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    except ImportError:
+        pass
+
 import requests
 import websocket
+from backend_push import BackendPusher
 from douyin_live_pb2 import (
     BindingGiftMessage,
     ChatMessage,
@@ -87,6 +96,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     ),
     "extra_cookie": "",
     "gift_log_dir": "",
+    "backend_push": {
+        "enabled": False,
+        "ws_url": "ws://127.0.0.1:8290",
+        "http_url": "",
+        "secret": "",
+        "anchor_id": 0,
+    },
 }
 
 CONFIG: Dict[str, Any] = dict(DEFAULT_CONFIG)
@@ -110,12 +126,16 @@ SIGN_PARAM_ORDER = (
 
 
 def load_config(path: Optional[str] = None) -> Dict[str, Any]:
-    """读取 config.json；缺失字段用内置默认值。"""
+    """读取 config.json；缺失字段用内置默认值。exe 运行时读 exe 同目录配置。"""
     global CONFIG
     config_path = path or os.path.join(_APP, "config.json")
+    bundled_example = os.path.join(_BUNDLE, "config.example.json")
     bundled_config = os.path.join(_BUNDLE, "config.json")
-    if not os.path.isfile(config_path) and os.path.isfile(bundled_config):
-        shutil.copy2(bundled_config, config_path)
+    if not os.path.isfile(config_path):
+        if os.path.isfile(bundled_example):
+            shutil.copy2(bundled_example, config_path)
+        elif os.path.isfile(bundled_config):
+            shutil.copy2(bundled_config, config_path)
     merged = dict(DEFAULT_CONFIG)
     if os.path.isfile(config_path):
         with open(config_path, encoding="utf-8") as f:
@@ -124,7 +144,12 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
             if key.startswith("_"):
                 continue
             if key in merged and value is not None:
-                merged[key] = value
+                if key == "backend_push" and isinstance(value, dict) and isinstance(merged[key], dict):
+                    nested = dict(merged[key])
+                    nested.update(value)
+                    merged[key] = nested
+                else:
+                    merged[key] = value
     else:
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(
@@ -426,7 +451,7 @@ def extract_room_id(html: str, fallback: str) -> str:
     return m.group(1) if m else fallback
 
 
-def check_room_status(room_id: str, session: requests.Session) -> Optional[int]:
+def check_room_status(room_id: str, session: requests.Session) -> Tuple[Optional[int], str]:
     url = (
         "https://webcast.amemv.com/webcast/room/reflow/info/"
         f"?type_id=0&live_id=1&room_id={room_id}&sec_user_id=&app_id=1128"
@@ -445,7 +470,7 @@ def check_room_status(room_id: str, session: requests.Session) -> Optional[int]:
         log(f"[房间] status={status} title={title}")
     else:
         log("[房间] 无法确认直播状态（room_id 可能无效）")
-    return status
+    return status, title
 
 
 def extract_user_unique_id(html: str) -> Optional[str]:
@@ -567,20 +592,80 @@ def start_heartbeat(ws) -> None:
             break
 
 
-def format_user(user: User) -> str:
-    name = user.nickName or user.displayId or user.idStr or (str(user.id) if user.id else "未知")
+def user_to_dict(user: Optional[User]) -> Dict[str, Any]:
+    if user is None or user.ByteSize() <= 0:
+        return {}
     uid = user.idStr or (str(user.id) if user.id and user.id != 111111 else "")
     level = user.payGrade.level if user.HasField("payGrade") else 0
-    gender = {0: "未知", 1: "男", 2: "女"}.get(user.gender, str(user.gender))
-    parts = [f"昵称:{name}"]
-    if uid:
-        parts.append(f"ID:{uid}")
-    if user.displayId:
-        parts.append(f"抖音号:{user.displayId}")
+    return {
+        "uid": uid,
+        "nickname": user.nickName or user.displayId or uid or "未知",
+        "display_id": user.displayId or "",
+        "gender": int(user.gender or 0),
+        "level": int(level or 0),
+    }
+
+
+def format_user(user: User) -> str:
+    info = user_to_dict(user)
+    if not info:
+        return "未知"
+    gender = {0: "未知", 1: "男", 2: "女"}.get(info.get("gender", 0), str(info.get("gender", 0)))
+    parts = [f"昵称:{info.get('nickname', '未知')}"]
+    if info.get("uid"):
+        parts.append(f"ID:{info['uid']}")
+    if info.get("display_id"):
+        parts.append(f"抖音号:{info['display_id']}")
     parts.append(f"性别:{gender}")
-    if level:
-        parts.append(f"等级:{level}")
+    if info.get("level"):
+        parts.append(f"等级:{info['level']}")
     return " | ".join(parts)
+
+
+def gift_message_to_payload(msg: GiftMessage, method: str) -> Dict[str, Any]:
+    count = extract_gift_count(msg)
+    gift_name = "礼物"
+    gift_id = int(msg.giftId or 0)
+    diamond = 0
+    if msg.HasField("gift"):
+        gift_name = msg.gift.name or msg.gift.describe or f"礼物ID:{msg.gift.id}"
+        gift_id = int(msg.gift.id or gift_id)
+        diamond = int(msg.gift.diamondCount or 0)
+    user = msg.user if msg.HasField("user") else None
+    return {
+        "gift": {
+            "method": method,
+            "gift_id": gift_id,
+            "gift_name": gift_name,
+            "count": count,
+            "diamond": diamond,
+            "total_diamond": diamond * count if diamond else 0,
+        },
+        "user": user_to_dict(user),
+    }
+
+
+def light_gift_message_to_payload(msg: LightGiftMessage, method: str) -> Dict[str, Any]:
+    count = extract_light_gift_count(msg)
+    gift_name = "礼物"
+    gift_id = 0
+    diamond = 0
+    if msg.HasField("gift"):
+        gift_name = msg.gift.name or msg.gift.describe or f"礼物ID:{msg.gift.id}"
+        gift_id = int(msg.gift.id or 0)
+        diamond = int(msg.gift.diamondCount or 0)
+    user = msg.common.user if msg.HasField("common") and msg.common.HasField("user") else None
+    return {
+        "gift": {
+            "method": method,
+            "gift_id": gift_id,
+            "gift_name": gift_name,
+            "count": count,
+            "diamond": diamond,
+            "total_diamond": diamond * count if diamond else 0,
+        },
+        "user": user_to_dict(user),
+    }
 
 
 def format_gift(
@@ -588,13 +673,16 @@ def format_gift(
     tracker: GiftTracker,
     ts: str = "",
     envelope_msg_id: int = 0,
-) -> Optional[str]:
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     msg = GiftMessage()
     try:
         msg.ParseFromString(payload)
     except Exception:
-        return None
-    return tracker.feed(msg, ts, envelope_msg_id)
+        return None, None
+    text = tracker.feed(msg, ts, envelope_msg_id)
+    if not text:
+        return None, None
+    return text, gift_message_to_payload(msg, "WebcastGiftMessage")
 
 
 def format_binding_gift(
@@ -602,15 +690,18 @@ def format_binding_gift(
     tracker: GiftTracker,
     ts: str = "",
     envelope_msg_id: int = 0,
-) -> Optional[str]:
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     msg = BindingGiftMessage()
     try:
         msg.ParseFromString(payload)
     except Exception:
-        return None
+        return None, None
     if not msg.HasField("msg"):
-        return None
-    return tracker.feed(msg.msg, ts, envelope_msg_id)
+        return None, None
+    text = tracker.feed(msg.msg, ts, envelope_msg_id)
+    if not text:
+        return None, None
+    return text, gift_message_to_payload(msg.msg, "WebcastBindingGiftMessage")
 
 
 def format_light_gift(
@@ -618,14 +709,14 @@ def format_light_gift(
     tracker: GiftTracker,
     ts: str = "",
     envelope_msg_id: int = 0,
-) -> Tuple[Optional[str], Optional[str]]:
+) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
     msg = LightGiftMessage()
     try:
         msg.ParseFromString(payload)
     except Exception:
-        return None, None
+        return None, None, None
     if tracker.mark_light_seen(envelope_msg_id, msg.common.msgId if msg.HasField("common") else 0):
-        return None, None
+        return None, None, None
     count = extract_light_gift_count(msg)
     gift_name = "礼物"
     diamond = 0
@@ -638,7 +729,8 @@ def format_light_gift(
     if diamond:
         display_parts.append(f"抖币:{diamond}")
     log_line = format_gift_log_line(ts, user, count, gift_name, diamond)
-    return " | ".join(display_parts), log_line
+    payload_dict = light_gift_message_to_payload(msg, "WebcastLightGiftMessage")
+    return " | ".join(display_parts), log_line, payload_dict
 
 
 def format_fan_ticket(payload: bytes, last_count: Dict[str, int]) -> Optional[str]:
@@ -733,8 +825,22 @@ def run(
     on_started: Optional[Callable[[str, str], None]] = None,
 ) -> None:
     cookie, session, room_id, uid = prepare_session(live_id, extra_cookie)
-    room_status = check_room_status(room_id, session)
+    room_status, room_title = check_room_status(room_id, session)
     wss_url = fetch_wss_url(room_id, uid, use_local_sign=use_local_sign)
+
+    backend_pusher = BackendPusher(CONFIG.get("backend_push") or {})
+    backend_pusher.start()
+    room_info = {
+        "room_id": room_id,
+        "live_id": live_id,
+        "title": room_title,
+        "status": room_status or 0,
+    }
+    backend_pusher.push({
+        "event": "room_connected",
+        "ts": int(time.time()),
+        "room": room_info,
+    })
 
     gift_log: Optional[GiftLogWriter] = None
     log_file = ""
@@ -772,6 +878,8 @@ def run(
         "gift_tracker": GiftTracker(),
         "fan_ticket": {},
         "gift_events": 0,
+        "room_info": room_info,
+        "backend_pusher": backend_pusher,
     }
 
     def record_gift(
@@ -781,6 +889,7 @@ def run(
         debug: bool,
         payload_len: int,
         log_line: Optional[str] = None,
+        gift_payload: Optional[Dict[str, Any]] = None,
     ) -> None:
         if text:
             state["gift_events"] += 1
@@ -789,6 +898,15 @@ def run(
                 gift_log.write(line)
             elif not gift_log:
                 print_gift(ts, text)
+            if gift_payload and state.get("backend_pusher"):
+                event = {
+                    "event": "gift",
+                    "ts": int(time.time()),
+                    "room": state["room_info"],
+                    "log_line": line or text,
+                }
+                event.update(gift_payload)
+                state["backend_pusher"].push(event)
         elif debug:
             log(f"[礼物] {ts} {method} 收到但解析失败 payload={payload_len}B")
 
@@ -820,39 +938,51 @@ def run(
             envelope_msg_id = int(item.msgId or 0)
 
             if method == "WebcastGiftMessage":
-                record_gift(
-                    ts,
-                    format_gift(
-                        item.payload,
-                        state["gift_tracker"],
-                        ts,
-                        envelope_msg_id,
-                    ),
-                    method,
-                    debug,
-                    len(item.payload),
-                )
-            elif method == "WebcastBindingGiftMessage":
-                record_gift(
-                    ts,
-                    format_binding_gift(
-                        item.payload,
-                        state["gift_tracker"],
-                        ts,
-                        envelope_msg_id,
-                    ),
-                    method,
-                    debug,
-                    len(item.payload),
-                )
-            elif method == "WebcastLightGiftMessage":
-                text, log_line = format_light_gift(
+                text, gift_payload = format_gift(
                     item.payload,
                     state["gift_tracker"],
                     ts,
                     envelope_msg_id,
                 )
-                record_gift(ts, text, method, debug, len(item.payload), log_line)
+                record_gift(
+                    ts,
+                    text,
+                    method,
+                    debug,
+                    len(item.payload),
+                    gift_payload=gift_payload,
+                )
+            elif method == "WebcastBindingGiftMessage":
+                text, gift_payload = format_binding_gift(
+                    item.payload,
+                    state["gift_tracker"],
+                    ts,
+                    envelope_msg_id,
+                )
+                record_gift(
+                    ts,
+                    text,
+                    method,
+                    debug,
+                    len(item.payload),
+                    gift_payload=gift_payload,
+                )
+            elif method == "WebcastLightGiftMessage":
+                text, log_line, gift_payload = format_light_gift(
+                    item.payload,
+                    state["gift_tracker"],
+                    ts,
+                    envelope_msg_id,
+                )
+                record_gift(
+                    ts,
+                    text,
+                    method,
+                    debug,
+                    len(item.payload),
+                    log_line,
+                    gift_payload=gift_payload,
+                )
             elif method == "WebcastUpdateFanTicketMessage":
                 text = format_fan_ticket(item.payload, state["fan_ticket"])
                 if text:
@@ -901,6 +1031,15 @@ def run(
         log(f"[错误] {error}")
 
     def on_close(ws, close_status_code, close_msg):
+        if state.get("backend_pusher"):
+            state["backend_pusher"].push({
+                "event": "room_disconnected",
+                "ts": int(time.time()),
+                "room": state["room_info"],
+                "close_code": close_status_code,
+                "close_msg": close_msg or "",
+            })
+            state["backend_pusher"].stop()
         if state["stats"]:
             summary = ", ".join(f"{k}={v}" for k, v in sorted(state["stats"].items()))
             log(f"\n[统计] {summary}")
@@ -941,6 +1080,7 @@ def run(
         ws.run_forever(ping_interval=0)
     finally:
         _ws_app = None
+        backend_pusher.stop()
 
 
 def _read_flag_value(flag: str) -> Optional[str]:

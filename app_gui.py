@@ -105,11 +105,22 @@ class GiftCollectorApp:
 
         def on_started(_room: str, log_file: str) -> None:
             self._log_file = log_file
-            self.root.after(0, lambda: self.status_var.set(f"状态：采集中 room_id={_room}"))
+            push_hint = ""
+            push_cfg = (collect_gifts.CONFIG.get("backend_push") or {})
+            if push_cfg.get("enabled"):
+                if push_cfg.get("ws_url"):
+                    push_hint = " | 已启用推送(WS)"
+                elif push_cfg.get("http_url"):
+                    push_hint = " | 已启用推送(HTTP)"
+            self.root.after(
+                0,
+                lambda: self.status_var.set(f"状态：采集中 room_id={_room}{push_hint}"),
+            )
             self.root.after(0, lambda: self.log_var.set(f"礼物日志：{log_file}"))
 
         def worker() -> None:
             try:
+                collect_gifts.load_config()
                 collect_gifts.run(
                     room_id,
                     show_join=False,

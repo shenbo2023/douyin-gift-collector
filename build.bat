@@ -39,8 +39,9 @@ echo 输出文件: dist\抖音礼物采集.exe
 echo.
 echo 使用说明:
 echo   1. 将 dist\抖音礼物采集.exe 复制到任意文件夹
-echo   2. 同目录会自动生成 config.json（可编辑 sid_guard）
+echo   2. 首次运行会在同目录生成 config.json（可编辑 sid_guard、backend_push）
 echo   3. 双击 exe，输入房间 ID，点「开始采集」
 echo   4. 礼物记录保存在同目录 gifts_房间ID.txt
+echo   5. 推送到后台：编辑 config.json 的 backend_push（ws_url 或 http_url）
 echo.
 pause
